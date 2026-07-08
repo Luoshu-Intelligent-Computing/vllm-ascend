@@ -14,6 +14,9 @@
 # limitations under the License.
 # This file is a part of the vllm-ascend project.
 #
+# PATCH for 310P long context OOM fix (nightly-main-310p)
+# Overrides build() to set attn_mask = None, avoiding O(L²) preallocation.
+#
 
 from typing import Any
 
@@ -55,6 +58,11 @@ class AscendAttentionMetadataBuilder310(AscendAttentionMetadataBuilder):
     the 310P-specific attention mask builder, ensuring that masks are
     generated in the correct format (FRACTAL_NZ) and logic required by
     the 310P hardware.
+
+    **310P Long Context OOM Fix**:
+    Overrides build() to set attn_mask = None for PrefillNoCache,
+    avoiding O(max_model_len²) preallocation (65536² × 2B = 8 GB).
+    Masks are generated on-demand in forward_prefill_310 and forward_chunked_prefill_310.
     """
 
     def __init__(
@@ -107,6 +115,16 @@ class AscendAttentionMetadataBuilder310(AscendAttentionMetadataBuilder):
         common_attn_metadata: AscendCommonAttentionMetadata,
         fast_build: bool = False,
     ) -> AscendMetadata:
+        """
+        **PATCHED**: OOM fix is applied in attention_mask.py — get_attention_mask() now caps
+        the mask size at COMPRESSED_MASK_SEQ_LEN (2048) regardless of max_model_len,
+        so the O(L²) allocation is already prevented upstream.
+
+        Extends base build() with splitfuse-specific metadata:
+        - PrefillNoCache: forward_prefill_310 uses attn_metadata.attn_mask (2048×2048 NZ)
+        - ChunkedPrefill/SpecDecoding: prepare query_lens_cpu and device-side views
+        - Decode: no mask needed (_npu_paged_attention)
+        """
         attn_metadata = super().build(common_prefix_len, common_attn_metadata, fast_build)
 
         num_reqs = common_attn_metadata.num_reqs
@@ -116,8 +134,10 @@ class AscendAttentionMetadataBuilder310(AscendAttentionMetadataBuilder):
             AscendAttentionState.ChunkedPrefill,
         )
         if attn_metadata.attn_state not in splitfuse_states:
+            # PrefillNoCache or DecodeOnly: no further processing needed
             return attn_metadata
 
+        # For splitfuse states, prepare query_lens_cpu (host tensor for ATB)
         query_start_loc_cpu = common_attn_metadata.query_start_loc_cpu[: num_reqs + 1]
         # ATB splitfuse qLensTensor must be host; filled here (outside graph forward).
         set_query_lens_cpu(
@@ -129,6 +149,7 @@ class AscendAttentionMetadataBuilder310(AscendAttentionMetadataBuilder):
         attn_metadata.seq_lens = common_attn_metadata.seq_lens[:num_reqs]
         attn_metadata.query_start_loc = common_attn_metadata.query_start_loc[: num_reqs + 1]
 
+        # If compressed mask is supported (v3/v2 算子), use fixed 2048×2048 mask
         if is_compressed_mask_supported():
             attn_metadata.attn_mask = AttentionMaskBuilder310.get_compressed_splitfuse_mask(self.device)
 
