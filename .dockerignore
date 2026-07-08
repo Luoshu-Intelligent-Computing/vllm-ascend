@@ -1,0 +1,26 @@
+# 旧 patch 目录（代码改动已直接在 vllm_ascend/ 中）
+poc/
+nightly/
+_archived/
+
+# 开发配置
+deploy/
+configs/
+
+# git 相关
+.git/
+.gitignore
+
+# CI/CD
+.github/
+.gitlab/
+
+# 临时文件
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.tox/
+.pytest_cache/

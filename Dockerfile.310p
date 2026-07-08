@@ -54,14 +54,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV SOC_VERSION=$SOC_VERSION \
     TASK_QUEUE_ENABLE=1 \
     OMP_NUM_THREADS=1
-COPY . /vllm-workspace/vllm-ascend/
+
+# Clone vllm-ascend with submodules from GitHub
+ARG VLLM_ASCEND_REPO=https://github.com/Luoshu-Intelligent-Computing/310p-vllm-ascend.git
+ARG VLLM_ASCEND_BRANCH=feat/310p-opt
+RUN git clone --recurse-submodules --depth 1 -b $VLLM_ASCEND_BRANCH $VLLM_ASCEND_REPO /vllm-workspace/vllm-ascend
 
 RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pypi" && \
-    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    bash -c "source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     source /usr/local/Ascend/nnal/atb/set_env.sh && \
     python3 -m pip install -e /vllm-workspace/vllm-ascend/ --extra-index https://download.pytorch.org/whl/cpu/ && \
     python3 -m pip uninstall -y triton-ascend triton && \
-    python3 -m pip cache purge
+    python3 -m pip cache purge"
 
 # Append `libascend_hal.so` path (devlib) to LD_LIBRARY_PATH
 RUN echo "export LD_PRELOAD=/usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2:$LD_PRELOAD" >> ~/.bashrc
