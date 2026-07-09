@@ -7,7 +7,7 @@ _archived/
 deploy/
 configs/
 
-# git 相关
+# git 根目录（但保留 submodules）
 .git/
 .gitignore
 
@@ -24,3 +24,6 @@ dist/
 build/
 .tox/
 .pytest_cache/
+
+# 确保 submodules 被包含
+!csrc/third_party/catlass/
