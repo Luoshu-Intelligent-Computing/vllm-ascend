@@ -5,6 +5,19 @@
   </picture>
 </p>
 
+> **⚠️ 分支说明（feat/310p-opt）**
+>
+> 本仓库是 `vllm-project/vllm-ascend` 的个人 fork，`feat/310p-opt` 分支包含针对 **Atlas 300I Duo (310P3)** 的专项优化改动。
+> - 源码改动：`vllm_ascend/_310p/attention/`（128K 上下文 OOM 修复 + nightly 接口适配）
+> - 部署资产：`deploy/`（脚本/测试/文档），`configs/`（网关配置）
+> - 生产镜像：`registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-20260708`
+>
+> **关键约束**：`--max-num-batched-tokens` 不得超过 **1024**（310P ATB 算子精度限制）
+>
+> 部署指南：[deploy/docs/guides/DEPLOYMENT_GUIDE.md](deploy/docs/guides/DEPLOYMENT_GUIDE.md)
+
+---
+
 <h3 align="center">
 vLLM Ascend Plugin
 </h3>
