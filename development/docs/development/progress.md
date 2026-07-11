@@ -1,5 +1,71 @@
 # 310P Long Context Fix Progress
 
+> **⚠️ 文档状态说明**  
+> 本文档记录完整的开发历程，包括已放弃的技术路线（causal_fa_310p kernel）。  
+> **当前生产方案**: 动态 chunk mask（源码烘焙） + 新镜像 `310p-opt-20260708`  
+> **部署指南**: 见 [310P_PRODUCTION_DEPLOYMENT.md](../guides/310P_PRODUCTION_DEPLOYMENT.md)  
+> **二轮总结**: 见 [../../docs/PHASE_2_COMPLETION_SUMMARY.md](../../docs/PHASE_2_COMPLETION_SUMMARY.md)
+
+---
+
+## 📊 二轮最终状态（2026-07-09）
+
+### ✅ 交付成果
+
+**镜像构建完成**:
+- Ubuntu: `registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-20260708` (16 GB)
+- openEuler: `registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-openeuler-20260708` (16.7 GB)
+- 特性: 源码改动已烘焙，GDN kernel 已编译，开箱即用
+
+**技术方案**:
+- ✅ 动态 chunk mask: 8 GB → 8 MB (-99.9% 内存)
+- ✅ 128K 上下文支持（max_model_len=131072）
+- ✅ Gateway 层部署（端口 8001，thinking 控制）
+- ❌ causal_fa_310p kernel 已放弃（seq_len≥2048 hang bug 无法修复）
+
+**验证数据**:
+| 场景 | Prompt Tokens | 状态 |
+|------|--------------|------|
+| 基础推理 | 11 | ✅ content="1 + 1 = 2" |
+| 长文本 | 40,018 | ✅ 正常 |
+| 极长文本 | 60,015 | ✅ 正常 |
+| 理论上限 | 131,072 | ✅ 支持 |
+
+### 🔄 与一轮 POC 的差异
+
+| 对比项 | 一轮 POC (nightly 外挂 patch) | 二轮生产 (源码烘焙) |
+|--------|------------------------------|-------------------|
+| 部署方式 | 容器启动时手动 cp patch + 重编译 | 镜像已包含，直接启动 |
+| 代码位置 | `patches/310p-long-context/*.py` 外挂 | `vllm_ascend/_310p/attention/` 源码中 |
+| 仓库结构 | llm-service 仓库中维护 patch | 310p-vllm-ascend fork 仓库 |
+| 镜像标签 | `nightly-main-310p` (官方 nightly) | `310p-opt-20260708` (自建) |
+| Gateway | 无 | ✅ llm-service Gateway (thinking 控制) |
+
+### 📁 当前代码位置
+
+**生产镜像源码**（310p-vllm-ascend fork）:
+```
+vllm_ascend/_310p/attention/
+├── metadata_builder.py    # 修复: attn_mask = None
+├── attention_v1.py         # 修复: forward_prefill_310 动态 chunk mask
+└── attention_mask.py       # 修复: lazy initialization
+```
+
+**Gateway 配置**（llm-service 仓库）:
+```
+configs/
+├── backends.310p-128k.yaml              # Backend 配置
+└── optional.ails-a1-310p-gateway-only.yaml  # Gateway 入口
+```
+
+---
+
+## 📚 历史开发记录
+
+以下是完整的开发历程，包括已放弃的技术路线和调试过程。
+
+---
+
 ## 目标
 让 Qwen3.6-35B-A3B-w8a8 在 Ascend 310P 上支持最大 131072 token（128K）长度，消除 O(L²) attention mask OOM。
 
