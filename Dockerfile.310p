@@ -105,6 +105,14 @@ RUN echo '#!/bin/bash' > /usr/local/bin/entrypoint.sh && \
     echo 'exec "$@"' >> /usr/local/bin/entrypoint.sh && \
     chmod +x /usr/local/bin/entrypoint.sh
 
+# causal_fa_310p operator: copy prebuilt .so files and set paths
+# To enable: set USE_CAUSAL_FA_310P=1 at container startup
+RUN mkdir -p /opt/causal_fa/lib
+COPY operators/causal_fa_310p/build/libcausal_fa_kernel.so /opt/causal_fa/lib/
+COPY operators/causal_fa_310p/torch_ops/torch_npu_causal_fa.cpython-311-aarch64-linux-gnu.so /opt/causal_fa/lib/
+ENV CAUSAL_FA_KERNEL_SO=/opt/causal_fa/lib/libcausal_fa_kernel.so
+ENV CAUSAL_FA_BINDINGS_SO=/opt/causal_fa/lib/torch_npu_causal_fa.cpython-311-aarch64-linux-gnu.so
+
 # Set entrypoint and default command
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 

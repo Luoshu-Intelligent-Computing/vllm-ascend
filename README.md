@@ -8,13 +8,17 @@
 > **⚠️ 分支说明（feat/310p-opt）**
 >
 > 本仓库是 `vllm-project/vllm-ascend` 的个人 fork，`feat/310p-opt` 分支包含针对 **Atlas 300I Duo (310P3)** 的专项优化改动。
-> - 源码改动：`vllm_ascend/_310p/attention/`（128K 上下文 OOM 修复 + nightly 接口适配）
-> - 部署资产：`deploy/`（脚本/测试/文档），`configs/`（网关配置）
-> - 生产镜像：`registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-20260708`
+> - 源码改动：`vllm_ascend/_310p/attention/`（128K 上下文 OOM 修复 + 动态 chunk mask）
+> - 生产镜像：
+>   - Ubuntu: `registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-20260708`
+>   - openEuler: `registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-openeuler-20260708`
+> - Gateway: `llm-service` 项目 Gateway 层（端口 8001，thinking 控制）
 >
 > **关键约束**：`--max-num-batched-tokens` 不得超过 **1024**（310P ATB 算子精度限制）
 >
-> 部署指南：[deploy/docs/guides/DEPLOYMENT_GUIDE.md](deploy/docs/guides/DEPLOYMENT_GUIDE.md)
+> **文档导航**：
+> - 📋 [二轮开发完成总结](docs/PHASE_2_COMPLETION_SUMMARY.md)（128K OOM 修复 + GDN 架构集成）
+> - 🚀 部署指南：见总结文档第三节
 
 ---
 
