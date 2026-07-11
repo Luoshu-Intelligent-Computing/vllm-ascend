@@ -407,6 +407,28 @@
 #       Remove this patch once the supported vLLM version contains the upstream
 #       MiniMax-M2 incremental tool-call streaming fix.
 #
+# ** 12b. File: platform/patch_structured_output.py**
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.sampling_params.SamplingParams._validate_structured_outputs`
+#      `vllm.v1.structured_output.StructuredOutputManager.grammar_init`
+#    Why:
+#       V1 structured outputs use one engine-level backend, while `backend=auto`
+#       resolves the backend per request. After one request initializes
+#       `xgrammar`, a later request that resolves to `guidance` can still reach
+#       the initialized `xgrammar` backend and crash during grammar compilation.
+#    How:
+#       Record the first resolved backend on the structured-output config and
+#       reject later requests that resolve to a different backend. Also guard
+#       `grammar_init` so requests that bypass API-side validation fail before
+#       backend grammar compilation.
+#    Related PR (if no, explain why):
+#       https://github.com/vllm-project/vllm/issues/43920
+#       https://github.com/vllm-project/vllm/pull/44401
+#    Future Plan:
+#       Remove this patch once upstream vLLM either enforces backend consistency
+#       before grammar compilation or safely handles mixed-backend grammar
+#       failures without killing the engine.
+#
 # ** 13. File: platform/patch_camem_allocator.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.config.model.is_cumem_allocator_available`
@@ -772,6 +794,36 @@
 #    Future Plan:
 #       Remove this patch when all ops in _forward_core support both Qwen3_5 and Qwen3Next.
 #
+# ** 17a. File: worker/patch_idex_310.py**
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.model_executor.layers.fla.ops.index.prepare_chunk_indices`
+#      `vllm.model_executor.layers.fla.ops.index.prepare_chunk_offsets`
+#    Why:
+#       310P uses Ascend-friendly chunk index helpers for Qwen GDN prefill.
+#    How:
+#       Replace upstream FLA chunk index helper functions with 310P implementations.
+#
+#   2. `vllm_ascend.spec_decode.llm_base_proposer.AscendSpecDecodeBaseProposer.set_inputs_first_pass`
+#    Why:
+#       310P needs to protect the tail slot during MTP input_ids shift to avoid
+#       GatherV2 corruption from persistent drafter input buffers.
+#    How:
+#       Reuse the 310P proposer implementation for the first-pass input shift.
+#
+#   3. `vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn.QwenGatedDeltaNetAttention`
+#    Why:
+#       Qwen GDN needs 310P-specific state helpers, forward core, state dtype,
+#       and attention backend/builder wiring.
+#    How:
+#       Patch Qwen GDN methods to use Ascend GDN implementations and the 310P
+#       GDN attention backend. RC devices also route upstream GDNAttentionBackend
+#       to the 310P metadata builder.
+#    Related PR (if no, explain why):
+#       No, 310P custom operator and backend behavior are vllm-ascend specific.
+#    Future Plan:
+#       Remove this patch when upstream exposes stable hooks for 310P GDN
+#       chunk metadata, spec-decode input layout, and backend selection.
+#
 # ** 18. File: worker/patch_cudagraph.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.cudagraph_dispatcher.CudagraphDispatcher._create_padded_batch_descriptor`
@@ -898,7 +950,44 @@
 #    Future Plan:
 #       Remove this patch when:
 #       vLLM itself supports kv transfer for mamba
-# ** 21. File: worker/patch_v2/patch_input_batch.py
+# ** 21. File: worker/patch_weight_utils.py**
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.model_executor.models.deepseek_v2.DeepseekV2ForCausalLM.load_weights`
+#    Why:
+#       The C8 weight quantized by modelslim will modify the model structure,
+#       and the scale and offset required for kvcache quantization will increase.
+#       In addition, the names of the quantization parameters are different from
+#       those in the community.
+#    How：
+#       we have enhanced the maybe_remap_kv_scale_name function.
+#    Future Plan:
+#       The maybe_remap_kv_scale_name function of the community is reconstructed to support
+#       multiple backends.
+# ** 21b. File: worker/patch_process_weights_after_loading.py**
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.model_executor.model_loader.utils.process_weights_after_loading`
+#      `vllm.model_executor.model_loader.base_loader.process_weights_after_loading`
+#      and imported references in vllm-ascend model loaders
+#    Why:
+#       DSA attention is implemented in vllm-ascend as the plugin layer
+#       `DSAAttention`. Upstream vLLM only runs post-load attention weight
+#       processing for built-in attention classes, so
+#       `DSAAttention.process_weights_after_loading()` is skipped in the
+#       original loader flow. DSV4 DSA-CP o-proj TP initialization must run in
+#       this post-load phase rather than being initialized lazily in forward.
+#    How:
+#       Rebind the upstream `process_weights_after_loading` helper, including
+#       already-imported loader references, so `DSAAttention` participates in
+#       the same post-load traversal while preserving the original quant-method
+#       and torchao reload behavior.
+#    Related PR (if no, explain why):
+#       https://github.com/vllm-project/vllm-ascend/pull/10694
+#       https://github.com/vllm-project/vllm/pull/46828
+#    Future Plan:
+#       Remove this patch once the supported vLLM version includes PR #46828.
+#       Then register `DSAAttention` through vLLM's post-load weight-processing
+#       registry instead of monkey-patching model-loader helpers.
+# ** 22. File: worker/patch_v2/patch_input_batch.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.worker.gpu.input_batch.InputBatch`
 #    Why:
@@ -908,7 +997,7 @@
 #       replace InputBatch with AscendInputBatch.
 #    Future Plan:
 #       remove this patch when vLLM-ascend's make_dummy behavior aligns with vLLM.
-# ** 22. File: worker/patch_v2/patch_block_table.py**
+# ** 23. File: worker/patch_v2/patch_block_table.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.worker.gpu.block_table.BlockTables`
 #    Why:
@@ -920,7 +1009,7 @@
 #    Future Plan:
 #       remove this patch when vLLM-ascend's BlockTables can initialize
 #       slot mapping as torch.int64 dtype.
-# ** 23. File: worker/patch_v2/patch_model_state.py**
+# ** 24. File: worker/patch_v2/patch_model_state.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.worker.gpu.model_states.default.init_model_state`
 #    Why:
@@ -930,7 +1019,7 @@
 #       Define AscendModelState and initialize it in init_model_state.
 #    Future Plan:
 #       remove this when vllm-ascend's attention metadata is align with vllm.
-# ** 24. File: worker/patch_v2/patch_triton.py**
+# ** 25. File: worker/patch_v2/patch_triton.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.worker.gpu.sample.logprob`, `vllm.v1.worker.gpu.sample.penalties.apply_penalties`,
 #      `vllm.v1.worker.gpu.sample.gumbel.gumbel_sample`
@@ -943,7 +1032,30 @@
 #    Future Plan:
 #       Remove this patch when vLLM support the dispatch function.
 #
-# ** 25. File: worker/patch_qwen3vl.py**
+# ** 26. File: worker/patch_gqa_c8.py**
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#   1. `vllm.model_executor.models.qwen3.Qwen3ForCausalLM.load_weights`
+#    Why:
+#       The GQA W8A8C8 model stores per-channel KV cache scales and offsets
+#       (k_cache_scale, k_cache_offset, v_cache_scale, v_cache_offset) under
+#       weight names that AutoWeightsLoader does not recognise and would
+#       silently discard.  Without these scales the INT8 KV cache cannot be
+#       dequantised correctly at inference time.
+#    How:
+#       Wrap load_weights to intercept the C8 scale/offset tensors before they
+#       reach the base loader.  Each intercepted tensor is routed to the
+#       corresponding nn.Parameter via its weight_loader, then excluded from
+#       the remaining weight stream so the base loader never sees it.
+#    Related PR (if no, explain why):
+#       This PR (Qwen3-32B and GLM4.7  W8A8C8 support).  Upstream vLLM's weight-loading
+#       pipeline does not yet have a generic hook for hardware-plugin-defined
+#       KV cache parameters.
+#    Future Plan:
+#       Remove this patch when vLLM provides a first-class extension point
+#       for loading extra KV cache quantisation parameters in model load_weights,
+#       or when the GQA model's weight names are aligned with the parameter
+#       names expected by the quantisation backend.
+# ** 27. File: worker/patch_qwen3vl.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.model_executor.models.qwen3.Qwen3Attention.forward` and
 #      `vllm.model_executor.models.qwen3_moe.Qwen3MoeAttention.forward`
@@ -954,7 +1066,7 @@
 #       when using mrope.
 #    Future Plan:
 #       Remove this patch when vllm-ascend supports pattern matching for this fused kernel.
-# ** 26. File: worker/patch_qwen3_dflash.py**
+# ** 28. File: worker/patch_qwen3_dflash.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.model_executor.models.qwen3_dflash.DFlashQwen3Model.precompute_and_store_context_kv`
 #    Why:
@@ -982,7 +1094,7 @@
 #       Remove this patch when upstream vLLM supports MoE communication type abstraction that
 #       can be extended by hardware plugins like vllm-ascend.
 #
-# ** 27. File: platform/patch_mamba_manager.py**
+# ** 29. File: platform/patch_mamba_manager.py**
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #   1. `vllm.v1.core.single_type_kv_cache_manager.MambaManager`
 #    Why:
