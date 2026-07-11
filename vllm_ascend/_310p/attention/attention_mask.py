@@ -25,7 +25,7 @@ import torch_npu
 from vllm_ascend.attention.attention_v1 import AscendMetadata
 from vllm_ascend.utils import ACL_FORMAT_FRACTAL_NZ, nd_to_nz_2d, nd_to_nz_spec
 
-COMPRESSED_MASK_SEQ_LEN = 2048
+COMPRESSED_MASK_SEQ_LEN = 4096
 PAGED_ATTENTION_COMPRESSED_MASK_VALUE = -10000.0
 
 

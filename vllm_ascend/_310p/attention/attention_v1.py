@@ -15,10 +15,27 @@
 # This file is a part of the vllm-ascend project.
 #
 
+import ctypes
+import logging
+import os
 from typing import Any
 
 import torch
 import torch_npu
+
+logger = logging.getLogger(__name__)
+
+# causal_fa_310p Feature Flag: 算子产物路径（支持通过环境变量覆盖，便于容器注入）
+_CAUSAL_FA_310P_KERNEL_SO = os.environ.get(
+    "CAUSAL_FA_KERNEL_SO",
+    "/home/nin/Workspace/310-ops/operators/causal_fa_310p/build/libcausal_fa_kernel.so",
+)
+_CAUSAL_FA_310P_BINDINGS_SO = os.environ.get(
+    "CAUSAL_FA_BINDINGS_SO",
+    "/home/nin/Workspace/310-ops/operators/causal_fa_310p/torch_ops/"
+    "torch_npu_causal_fa.cpython-311-aarch64-linux-gnu.so",
+)
+
 from vllm.v1.attention.backends.registry import (  # type: ignore
     AttentionBackendEnum,
     register_backend,
@@ -108,6 +125,41 @@ class AscendAttentionBackendImpl310(AscendAttentionBackendImpl):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.support_compressed_mask = is_compressed_mask_supported()
+
+        # causal_fa_310p Feature Flag
+        # USE_CAUSAL_FA_310P=1 时尝试加载算子；加载失败自动 fallback，不影响服务启动。
+        self._use_causal_fa = False
+        if os.environ.get("USE_CAUSAL_FA_310P", "0") == "1":
+            try:
+                # 先加载 kernel .so（libcausal_fa_kernel.so），再加载 Python bindings
+                # 修复：RTLD_GLOBAL → RTLD_LOCAL，避免符号污染导致的 Decode 性能下降
+                # （RTLD_GLOBAL 会导致符号冲突，Decode 从 31.5 t/s 降至 ~15 t/s）
+                ctypes.CDLL(_CAUSAL_FA_310P_KERNEL_SO, mode=ctypes.RTLD_LOCAL)
+                torch.ops.load_library(_CAUSAL_FA_310P_BINDINGS_SO)
+                # 确认算子已注册
+                _ = torch.ops.npu_ext.causal_fa_310p
+
+                # 注册 abstract (FakeTensor) 实现：vllm profiling 阶段使用假张量估算显存，
+                # 算子必须声明输出 shape/dtype，否则报 "no storage" 错误。
+                # impl_abstract 重复注册时抛 RuntimeError，用 except 跳过即可。
+                try:
+                    torch.library.impl_abstract("npu_ext::causal_fa_310p")(
+                        lambda q, k, v, seq_lens, scale: torch.empty_like(q)
+                    )
+                except Exception:
+                    pass  # already registered
+
+                self._use_causal_fa = True
+                logger.info(
+                    "causal_fa_310p operator loaded successfully from %s",
+                    _CAUSAL_FA_310P_BINDINGS_SO,
+                )
+            except Exception as e:
+                logger.warning(
+                    "USE_CAUSAL_FA_310P=1 but failed to load causal_fa_310p operator "
+                    "(falling back to _npu_flash_attention): %s",
+                    e,
+                )
 
     def _flash_attention(
         self,
@@ -206,6 +258,10 @@ class AscendAttentionBackendImpl310(AscendAttentionBackendImpl):
         """
         Executes Flash Attention for the prefill phase on 310P.
 
+        When USE_CAUSAL_FA_310P=1 and the operator loaded successfully, routes
+        to the causal_fa_310p custom kernel.  Otherwise (default) falls back to
+        _npu_flash_attention + dynamic chunk mask (original behaviour, unchanged).
+
         This method handles memory alignment padding. If the query shape implies
         padding (aligned_tokens > real_tokens), it adjusts the sequence length
         of the last request to account for the delta, ensuring the NPU operator
@@ -229,6 +285,22 @@ class AscendAttentionBackendImpl310(AscendAttentionBackendImpl):
             seq_len = seq_len.clone()
             seq_len[-1] += delta
 
+        # --- causal_fa_310p fast path ---
+        # Activated only when USE_CAUSAL_FA_310P=1 AND the operator loaded OK.
+        # seq_lens_cpu_int32: CPU tensor, dtype=int32 (required by the operator).
+        if self._use_causal_fa:
+            seq_lens_cpu_int32 = seq_len.to(device="cpu", dtype=torch.int32)
+            result = torch.ops.npu_ext.causal_fa_310p(
+                query,
+                key,
+                value,
+                seq_lens_cpu_int32,
+                self.scale,
+            )
+            output.copy_(result)
+            return output
+
+        # --- fallback: original _npu_flash_attention + dynamic chunk mask ---
         mask = attn_metadata.attn_mask
         return self._flash_attention(query, key, value, mask, seq_len, output)
 
