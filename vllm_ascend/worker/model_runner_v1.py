@@ -133,6 +133,7 @@ from vllm_ascend.sample.sampler import AscendSampler
 from vllm_ascend.spec_decode import get_spec_decode_method
 from vllm_ascend.spec_decode.dflash_proposer import AscendDflashProposer
 from vllm_ascend.spec_decode.draft_proposer import AscendDraftModelProposer
+from vllm_ascend.spec_decode.dspark_proposer import AscendDsparkProposer
 from vllm_ascend.spec_decode.eagle_proposer import AscendEagleProposer
 from vllm_ascend.spec_decode.extract_hidden_states_proposer import (
     AscendExtractHiddenStatesProposer,
@@ -309,6 +310,15 @@ class NPUModelRunner(GPUModelRunner):
             self.max_num_reqs + 2,  # type: ignore[has-type]
             dtype=torch.int32,
         )
+        self.group_len = self._make_buffer(
+            vllm_config.scheduler_config.max_num_batched_tokens , dtype=torch.int32
+        )        
+        self.group_key_idx = self._make_buffer(
+           vllm_config.scheduler_config.max_num_batched_tokens , dtype=torch.int32
+        )        
+        self.group_key_cache_idx = self._make_buffer(
+            vllm_config.scheduler_config.max_num_batched_tokens, dtype=torch.int32
+        )
 
         # Now, query_start_loc is padded.
         # But gdn needs an unpadded one.
@@ -474,6 +484,9 @@ class NPUModelRunner(GPUModelRunner):
             if vllm_config.speculative_config
             else None
         )
+        if not vllm_version_is("0.23.0"):
+            if vllm_config.speculative_config and vllm_config.speculative_config.use_dspark():
+                self.use_aux_hidden_state_outputs = True
         # When True, run update_full_graph_params before self.model (ENPU / graph capture order).
         # Internal / non-public toggle: read C getenv ``ENPU_ENABLE`` from enpu code (not in envs.py).
         _enpu = get_c_env("ENPU_ENABLE")
@@ -582,7 +595,6 @@ class NPUModelRunner(GPUModelRunner):
         self.reorder_batch_threshold: int | None = None
         self.long_seq_metadata = None
         self.query_lens: torch.Tensor | None = None
-        self.cpu_slot_mapping = None
         self.sampling_done_event: torch.npu.Event | None = None
 
         # self.cudagraph_batch_sizes sorts in ascending order.
@@ -623,6 +635,7 @@ class NPUModelRunner(GPUModelRunner):
             | AscendStep3p5MTPProposer
             | AscendDraftModelProposer
             | AscendDflashProposer
+            | AscendDsparkProposer
             | AscendSuffixDecodingProposer
             | AscendMedusaProposer
             | AscendExtractHiddenStatesProposer
@@ -3238,7 +3251,6 @@ class NPUModelRunner(GPUModelRunner):
             else:
                 blk_table = self.input_batch.block_table[kv_cache_gid]
                 slot_mapping = blk_table.slot_mapping.gpu[:maybe_pcp_full_tokens]
-                self.cpu_slot_mapping = blk_table.slot_mapping.cpu[:maybe_pcp_full_tokens]
                 blk_table_tensor = blk_table.get_device_tensor()[:num_reqs_padded]
                 # Fill unused with -1. Needed for reshape_and_cache in full cuda
                 # graph mode. `blk_table_tensor` -1 to match mamba PAD_SLOT_ID
@@ -3300,7 +3312,6 @@ class NPUModelRunner(GPUModelRunner):
             max_seq_len=max_seq_len,
             block_table_tensor=block_table_gid_0,
             slot_mapping=slot_mapping_gid_0,
-            slot_mapping_cpu=self.cpu_slot_mapping,
             causal=True,
             is_prefilling=is_prefilling,
             num_input_tokens=num_tokens_padded,
@@ -3310,6 +3321,9 @@ class NPUModelRunner(GPUModelRunner):
             attn_state=self.attn_state,
             decode_token_per_req=self.decode_token_per_req,
             prefill_context_parallel_metadata=self.long_seq_metadata,
+            group_len = self.group_len.gpu[:num_reqs_padded],
+            group_key_idx = self.group_key_idx.gpu[:num_reqs_padded],
+            group_key_cache_idx = self.group_key_cache_idx.gpu[:num_reqs_padded],
         )
 
         if logits_indices is not None and self.cache_config.kv_sharing_fast_prefill:
@@ -3425,7 +3439,8 @@ class NPUModelRunner(GPUModelRunner):
                 self.drafter.set_per_group_attn_metadata(
                     kv_cache_gid, cm.block_table_tensor, cm.slot_mapping)
             if self.speculative_config and spec_decode_common_attn_metadata is None:
-                if isinstance(self.drafter, AscendEagleProposer | AscendDraftModelProposer | AscendDflashProposer):
+                if isinstance(self.drafter, AscendEagleProposer | AscendDraftModelProposer | AscendDflashProposer 
+                    | AscendDsparkProposer):
                     if self.drafter.attn_layer_names[0] in kv_cache_group.layer_names:
                         spec_decode_common_attn_metadata = cm
                 else:
@@ -3945,6 +3960,19 @@ class NPUModelRunner(GPUModelRunner):
             load_model_total_time,
         )
 
+    def _get_eagle3_aux_layers_from_config(self) -> tuple[int, ...] | None:
+        # add additional logic for dspark-config
+        if not (self.speculative_config and self.speculative_config.draft_model_config):
+            return None
+        hf_config = self.speculative_config.draft_model_config.hf_config
+        if hasattr(hf_config, 'target_layer_ids'):
+            layer_ids = [
+                i for i in (hf_config.target_layer_ids or [])
+            ]
+            if layer_ids and isinstance(layer_ids, (list, tuple)):
+                return tuple(layer_ids)
+        return super()._get_eagle3_aux_layers_from_config()
+
     def _start_dump_data(self) -> None:
         if self.debugger is None or self._debugger_started:
             return
@@ -3994,7 +4022,7 @@ class NPUModelRunner(GPUModelRunner):
         ):
             assert isinstance(
                 self.drafter,
-                AscendEagleProposer | AscendDflashProposer | AscendDraftModelProposer,
+                AscendEagleProposer | AscendDflashProposer | AscendDsparkProposer | AscendDraftModelProposer,
             )
             block_size = (self.kernel_block_sizes[0] if isinstance(
                 self.kernel_block_sizes, list) else self.kernel_block_sizes)
