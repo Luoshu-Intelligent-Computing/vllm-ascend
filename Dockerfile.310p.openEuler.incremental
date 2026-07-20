@@ -1,0 +1,23 @@
+# 增量构建：基于已有 310p-opt 镜像，仅重新安装 vllm-ascend（跳过基础镜像拉取和 vllm 安装）
+# 用于上游同步后的快速重建，节省 3.96GB 基础镜像下载时间
+
+FROM registry.cn-hangzhou.aliyuncs.com/meetai/llm-service-vllm-ascend:310p-opt-openeuler-20260709
+
+ARG PIP_INDEX_URL="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+ARG SOC_VERSION="ascend310p1"
+
+ENV SOC_VERSION=$SOC_VERSION
+
+# 重新安装 vllm-ascend（包含上游同步后的最新代码，已修复 build_aclnn.sh 310p 缺失 store_kv_block_metadata）
+COPY . /vllm-workspace/vllm-ascend/
+
+RUN pip config set global.index-url ${PIP_INDEX_URL} && \
+    export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pypi" && \
+    bash -c "source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    source /usr/local/Ascend/nnal/atb/set_env.sh && \
+    rm -rf /vllm-workspace/vllm-ascend/csrc/build && \
+    rm -rf /vllm-workspace/vllm-ascend/vllm_ascend/_cann_ops_custom/vendors/ && \
+    python3 -m pip install -e /vllm-workspace/vllm-ascend/ --no-build-isolation --extra-index https://download.pytorch.org/whl/cpu/ && \
+    python3 -m pip uninstall -y triton-ascend triton && \
+    python3 -m pip cache purge"
+
