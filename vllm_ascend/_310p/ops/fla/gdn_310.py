@@ -353,6 +353,12 @@ class AscendGatedDeltaNetAttention310(GatedDeltaNetAttention):
             if attn_metadata.num_prefills > 0:
                 initial_state = ssm_state[non_spec_state_indices_tensor].contiguous()
                 initial_state[~has_initial_state, ...] = 0
+                # chunk_gated_delta_rule_310 runs on CPU (Python loops in
+                # _pad_varlen_to_chunk), so cu_seqlens must be a CPU tensor.
+                # non_spec_query_start_loc is a device tensor (used by
+                # npu_causal_conv1d_310 above); convert lazily here to avoid
+                # a GPU->CPU sync inside the ACL stream capture context which
+                # would trigger error 507018 on 310P RC mode.
                 (
                     core_attn_out_non_spec,
                     last_recurrent_state,
@@ -364,7 +370,7 @@ class AscendGatedDeltaNetAttention310(GatedDeltaNetAttention):
                     beta=beta_non_spec,
                     initial_state=initial_state,
                     output_final_state=True,
-                    cu_seqlens=non_spec_query_start_loc,
+                    cu_seqlens=non_spec_query_start_loc.cpu(),
                     head_first=False,
                     use_qk_l2norm_in_kernel=True,
                 )

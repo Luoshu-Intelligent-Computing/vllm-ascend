@@ -158,6 +158,12 @@ def is_rc_device() -> bool:
     RC mode (e.g. Atlas 200I Pro): host and NPU share memory. EP mode
     (e.g. Atlas 300I DUO on PCIe): ``lspci`` output typically contains
     ``accelerators``.
+
+    Detection order:
+    1. Env var ``VLLM_ASCEND_RC_DEVICE=1/0`` – explicit override.
+    2. ``lspci`` – check for PCIe accelerator cards (EP mode indicator).
+    3. ``/sys/bus/pci/devices`` – fallback when ``lspci`` is absent.
+    4. Default to True for 310P (SoC RC is more common than EP for this chip).
     """
     global _IS_RC_DEVICE
     if not is_310p():
@@ -165,13 +171,44 @@ def is_rc_device() -> bool:
     if _IS_RC_DEVICE is not None:
         return _IS_RC_DEVICE
 
+    # 1. Explicit env-var override (useful when lspci is missing from image)
+    import os
+    env_val = os.getenv("VLLM_ASCEND_RC_DEVICE", "").strip().lower()
+    if env_val in ("1", "true", "yes"):
+        _IS_RC_DEVICE = True
+        return _IS_RC_DEVICE
+    if env_val in ("0", "false", "no"):
+        _IS_RC_DEVICE = False
+        return _IS_RC_DEVICE
+
+    # 2. lspci – EP devices show an "accelerators" line
     try:
         import subprocess
-
         result = subprocess.run(["lspci"], capture_output=True, text=True, check=True)
         _IS_RC_DEVICE = not any("accelerators" in line.strip() for line in result.stdout.splitlines())
+        return _IS_RC_DEVICE
     except (subprocess.CalledProcessError, FileNotFoundError):
-        _IS_RC_DEVICE = False
+        pass
+
+    # 3. /sys/bus/pci/devices – check PCI class 0x120x (processing accelerator)
+    try:
+        import pathlib
+        has_pcie_accelerator = False
+        for dev in pathlib.Path("/sys/bus/pci/devices").iterdir():
+            class_file = dev / "class"
+            if class_file.exists():
+                pci_class = class_file.read_text().strip().lower()
+                # PCI class 0x1200xx = Processing Accelerator
+                if pci_class.startswith("0x1200"):
+                    has_pcie_accelerator = True
+                    break
+        _IS_RC_DEVICE = not has_pcie_accelerator
+        return _IS_RC_DEVICE
+    except Exception:
+        pass
+
+    # 4. Default: assume RC mode for 310P (SoC form factor is more common)
+    _IS_RC_DEVICE = True
     return _IS_RC_DEVICE
 
 

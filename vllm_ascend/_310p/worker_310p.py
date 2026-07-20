@@ -107,7 +107,17 @@ class NPUWorker310(NPUWorker):
         # based on the already occupied space of the system memory.
 
         if is_rc_device():
-            self.available_kv_cache_memory_bytes = (self.requested_memory - psutil.virtual_memory().used) // 2
+            # RC mode: host and device share physical memory.
+            # Compute model overhead as the delta of psutil.used between before and after model loading,
+            # so that CANN driver baseline (which differs by ~20 GB between CANN versions) cancels out.
+            #   used_at_init  = total_ram - free_memory_at_init  (psutil, before model loading)
+            #   model_overhead = current psutil.used - used_at_init  (pure model weights + activations)
+            # requested_memory is also in psutil units (total_memory * gpu_memory_utilization).
+            used_at_init = psutil.virtual_memory().total - self.init_snapshot.free_memory
+            model_overhead = max(0, psutil.virtual_memory().used - used_at_init)
+            self.available_kv_cache_memory_bytes = (
+                self.requested_memory - model_overhead
+            ) // 2
         else:
             self.available_kv_cache_memory_bytes = (
                 self.requested_memory - profile_result.non_kv_cache_memory - non_torch_memory_cleared_by_empty_cache
@@ -143,9 +153,28 @@ class NPUWorker310(NPUWorker):
             self.init_snapshot = MemorySnapshot(device=device)
         self.requested_memory = self.init_snapshot.total_memory * self.cache_config.gpu_memory_utilization
         if is_rc_device():
+            # RC mode: host and device share physical memory.
+            # On SoC, CANN driver may pre-allocate significant RAM at startup
+            # (e.g. ~37 GB with CANN 9.1), making psutil.available < total*utilization.
+            # torch.npu.mem_get_info() also reflects this reduced available memory on SoC.
+            # Cap requested_memory to what is actually available rather than failing,
+            # since the remaining memory may still be sufficient for model + KV cache.
             self.init_snapshot.free_memory = psutil.virtual_memory().available
             logger.info_once("Root Complex (RC) mode: host and device memory are shared.")
-        if self.init_snapshot.free_memory < self.requested_memory:
+            if self.init_snapshot.free_memory < self.requested_memory:
+                GiB = lambda b: round(b / GiB_bytes, 2)
+                logger.warning(
+                    "RC mode: available memory (%s/%s GiB) < requested "
+                    "(%s x %s = %s GiB). Capping to available. "
+                    "CANN driver may have pre-allocated memory at startup.",
+                    GiB(self.init_snapshot.free_memory),
+                    GiB(self.init_snapshot.total_memory),
+                    self.cache_config.gpu_memory_utilization,
+                    GiB(self.init_snapshot.total_memory),
+                    GiB(self.requested_memory),
+                )
+                self.requested_memory = self.init_snapshot.free_memory
+        elif self.init_snapshot.free_memory < self.requested_memory:
             GiB = lambda b: round(b / GiB_bytes, 2)
             raise ValueError(
                 f"Free memory on device "
