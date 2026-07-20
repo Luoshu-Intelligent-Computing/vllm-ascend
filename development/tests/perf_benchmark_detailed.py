@@ -6,7 +6,7 @@
 import json, time, statistics, urllib.request, urllib.error, sys
 
 API_BASE = "http://localhost:18082"
-MODEL = "qwen3.6-128k"
+MODEL = "qwen3.6-128k-nightly"
 REPEATS = 3
 
 # ─────────────────────────────────────────

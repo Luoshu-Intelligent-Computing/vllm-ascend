@@ -9,7 +9,7 @@ Decode 专项性能测试：固定极短 prompt，长 decode，精确测量 deco
 import json, time, statistics, urllib.request, urllib.error, sys
 
 API_URL = "http://localhost:18082/v1/chat/completions"
-MODEL = "qwen3.6-64k"
+MODEL = "qwen3.6-128k"
 
 def call_api(messages, max_tokens, timeout=600):
     payload = json.dumps({

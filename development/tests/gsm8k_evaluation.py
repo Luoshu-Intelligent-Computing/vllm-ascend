@@ -9,7 +9,7 @@ import urllib.request, urllib.error
 from datasets import load_from_disk
 
 API_URL = "http://localhost:18082/v1/chat/completions"
-MODEL = "qwen3.6-64k"
+MODEL = "qwen3.6-128k"
 GSM8K_PATH = "/home/nin/Workspace/gsm8k_data/test"
 
 def call_api(messages, max_tokens=512, temperature=0.0):

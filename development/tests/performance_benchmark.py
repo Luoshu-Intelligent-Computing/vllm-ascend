@@ -6,7 +6,7 @@
 import json, time, statistics, urllib.request, urllib.error, sys
 
 API_URL = "http://localhost:18082/v1/chat/completions"
-MODEL = "qwen3.6-64k"
+MODEL = "qwen3.6-128k"
 
 def call_api(messages, max_tokens=100, timeout=600):
     payload = json.dumps({
