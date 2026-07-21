@@ -62,6 +62,9 @@ Do not alter the position rule, dtype, padding helper, or format cast.
 
 Run the command from Task 1. Expected: PASS.
 
+Result: the targeted test passed in the remote v11 container after the minimal
+source change.
+
 ### Task 3: Add and verify causal/non-aligned coverage
 
 **Files:**
@@ -92,6 +95,9 @@ pytest -q tests/ut/_310p/attention/test_attention_mask_310.py
 
 Expected: all tests pass.
 
+Result: `3 passed, 14 warnings in 0.07s` in the remote one-NPU test container.
+The live-K ATB ABI was separately proven before this implementation.
+
 ### Task 4: Review and prepare service validation
 
 **Files:**
@@ -115,3 +121,7 @@ PI-1 image. Do not overwrite the baseline image or container.
 git add vllm_ascend/_310p/attention/attention_mask.py tests/ut/_310p/attention/test_attention_mask_310.py docs/plans/
 git commit -s -m "perf(310p): narrow splitfuse mask to live context"
 ```
+
+Status: awaiting explicit confirmation for the signed commit and the subsequent
+distinct-image build. The preserved baseline image and container are not targets
+of either action.

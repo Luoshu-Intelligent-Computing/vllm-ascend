@@ -82,8 +82,8 @@ class AttentionMaskBuilder310:
 
         **OOM FIX for 128K context**: Uses on-the-fly broadcasting instead of pre-allocating
         a [max_seqlen, max_seqlen] full causal matrix (131072² × 2B = 34 GB → OOM).
-        Generates [T, max_seqlen] where T ≤ max_num_batched_tokens (1024), producing at most
-        1024 × 131072 × 2B ≈ 256 MB as a temporary allocation that is freed after use.
+        Generates [T, max_context_len] where T ≤ max_num_batched_tokens (1024), using only
+        the active batch's maximum context width for the temporary allocation.
 
         Args:
             attn_metadata (AscendMetadata): Metadata containing query start locations and sequence lengths.
@@ -97,11 +97,12 @@ class AttentionMaskBuilder310:
         q_list = qlens.tolist()
         context_lens = attn_metadata.seq_lens.to("cpu", dtype=torch.int32)
         c_list = context_lens.tolist()
+        max_context_len = max(c_list)
         pos_list = [p for ql, cl in zip(q_list, c_list) for p in range(cl - ql, cl)]
-        # On-the-fly generation via broadcasting — avoids [max_seqlen, max_seqlen] pre-allocation.
-        # For 128K: generates [T, 131072] fp16 (T ≤ 1024) ≈ 256 MB as a transient tensor.
+        # On-the-fly generation via broadcasting avoids a full causal matrix and uses
+        # only the active batch's maximum context width.
         positions = torch.tensor(pos_list, dtype=torch.int64, device=device)
-        col_idx = torch.arange(cls.max_seqlen, dtype=torch.int64, device=device)
+        col_idx = torch.arange(max_context_len, dtype=torch.int64, device=device)
         mask = torch.where(
             col_idx.unsqueeze(0) > positions.unsqueeze(1),
             torch.full((1, 1), float("-inf"), dtype=torch.float16, device=device),
@@ -142,7 +143,9 @@ class AttentionMaskBuilder310:
         - Decode: no mask needed
         """
         # FIX: Cap at COMPRESSED_MASK_SEQ_LEN (2048) to avoid 8GB allocation
-        max_seq_len = COMPRESSED_MASK_SEQ_LEN if self.support_compressed_mask else min(self.max_seqlen, COMPRESSED_MASK_SEQ_LEN)
+        max_seq_len = (
+            COMPRESSED_MASK_SEQ_LEN if self.support_compressed_mask else min(self.max_seqlen, COMPRESSED_MASK_SEQ_LEN)
+        )
 
         if getattr(model_config, "runner_type", None) == "pooling":
             if causal:

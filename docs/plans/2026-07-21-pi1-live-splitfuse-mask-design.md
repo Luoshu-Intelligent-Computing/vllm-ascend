@@ -25,13 +25,19 @@ output as K=64 with the inactive tail set to `-inf`.
   the broadcast work or its 128K K dimension.
 - Use a compressed-mask operator: not available in the active CANN runtime.
 
-## Validation
+## Unit Validation
 
 Focused CPU-mocked unit tests will require K to track the live maximum,
 including a non-16-aligned width, and will reconstruct the ND mask to verify
 per-token causal values. The production change then requires the frozen
 AISBench matrix, GSM8K quick sample, long-context smoke test, Decode checks,
 and a bounded profiler confirmation before acceptance.
+
+The implementation completed the RED/GREEN cycle in the remote v11 image: the
+first test failed with the fixed `[1,256,16,16]` mask for live K=7, then the
+complete target module passed three tests after the minimal source change. The
+K=33 test reconstructs physical `[1,3,16,16]` NZ layout and verifies its
+zero-padded tail. This is unit evidence only; service validation remains open.
 
 ## Rollback
 
