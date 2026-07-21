@@ -41,9 +41,11 @@ RUN if [ -n "$VLLM_COMMIT" ]; then \
     else \
       git clone --depth 1 -b $VLLM_TAG $VLLM_REPO /vllm-workspace/vllm; \
     fi
-# In x86, triton will be installed by vllm. But in Ascend, triton doesn't work correctly. we need to uninstall it.
+# In aarch64 Ascend, triton-ascend replaces standard triton and must be uninstalled.
+# In x86, torch==2.10.0+cpu (from pytorch.org) requires standard triton for torch._dynamo
+# initialization even though we never use triton for NPU computation. Keep triton on x86.
 RUN VLLM_TARGET_DEVICE="empty" python3 -m pip install -e /vllm-workspace/vllm/[audio] --extra-index https://download.pytorch.org/whl/cpu/ && \
-    python3 -m pip uninstall -y triton && \
+    python3 -m pip uninstall -y triton-ascend && \
     python3 -m pip cache purge
 
 # Install vllm-ascend
@@ -58,7 +60,7 @@ RUN export PIP_EXTRA_INDEX_URL="https://mirrors.huaweicloud.com/ascend/repos/pyp
     bash -c "source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     source /usr/local/Ascend/nnal/atb/set_env.sh && \
     python3 -m pip install -e /vllm-workspace/vllm-ascend/ --extra-index https://download.pytorch.org/whl/cpu/ && \
-    python3 -m pip uninstall -y triton-ascend triton && \
+    python3 -m pip uninstall -y triton-ascend && \
     python3 -m pip cache purge"
 
 RUN echo "export LD_PRELOAD=/usr/lib64/libjemalloc.so.2:$LD_PRELOAD" >> ~/.bashrc
@@ -87,13 +89,12 @@ RUN mkdir -m 750 /var/driver -m 750 /var/dmp -m 750 /usr/slog && \
     chown HwHiAiUser:HwHiAiUser /var/log/npu/slog
 
 # Dynamically generate entrypoint.sh for dual mode compatibility
+# SoC daemons (slogd / dmp_daemon) are aarch64 binaries; skip them on x86_64.
 RUN echo '#!/bin/bash' > /usr/local/bin/entrypoint.sh && \
-    echo 'if lspci 2>/dev/null | grep -qi "accelerators"; then' >> /usr/local/bin/entrypoint.sh && \
-    echo '    :' >> /usr/local/bin/entrypoint.sh && \
-    echo 'else' >> /usr/local/bin/entrypoint.sh && \
+    echo '# SoC mode: start NPU daemons only on aarch64 non-PCIe devices' >> /usr/local/bin/entrypoint.sh && \
+    echo 'if [ "$(uname -m)" = "aarch64" ] && ! lspci 2>/dev/null | grep -qi "accelerators"; then' >> /usr/local/bin/entrypoint.sh && \
     echo '    su - HwHiAiUser -c "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/:/usr/lib64 && /lib/ld-linux-aarch64.so.1 /var/slogd -d >/dev/null &"' >> /usr/local/bin/entrypoint.sh && \
     echo '    su - HwDmUser -c "export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/:/usr/lib64 && /lib/ld-linux-aarch64.so.1 /var/dmp_daemon -I -M -U 8087 &"' >> /usr/local/bin/entrypoint.sh && \
-    echo '    ' >> /usr/local/bin/entrypoint.sh && \
     echo '    rm -rf /lib64/ld-linux-aarch64.so.1' >> /usr/local/bin/entrypoint.sh && \
     echo '    ln -sf /lib/ld-linux-aarch64.so.1 /lib64/ld-linux-aarch64.so.1' >> /usr/local/bin/entrypoint.sh && \
     echo 'fi' >> /usr/local/bin/entrypoint.sh && \

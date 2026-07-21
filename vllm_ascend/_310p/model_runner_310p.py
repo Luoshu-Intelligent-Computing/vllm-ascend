@@ -111,15 +111,13 @@ class NPUModelRunner310(NPUModelRunner):
 
     def _update_states(self, scheduler_output: SchedulerOutput):
         deferred = super()._update_states(scheduler_output)
-        if scheduler_output.finished_req_ids:
-            # condense() rewrites block_table.np (move_row). Drain the previous
-            # step's ACL graph replay on the NPU stream before the condensed
-            # CPU layout is uploaded and read as attn_metadata.block_tables.
-            # Main-line Ascend relies on the end-of-_prepare_inputs Triton
-            # slot-mapping kernel (reads block_table.gpu) for stream ordering;
-            # 310P uses CPU NumPy for slot_mapping and needs this barrier on
-            # layout-change steps only.
-            torch.npu.current_stream().synchronize()
+        # Unconditional synchronize: drain the previous step's ACL graph replay
+        # before CPU writes (block_table.np condense, gdn_query_start_loc upload)
+        # are committed and read as attn_metadata in the next step.
+        # PR#9727 gated this on finished_req_ids, which left the very first
+        # request unprotected (no prior finished requests → no sync → warmup
+        # dummy values still in-flight when graph replay starts → garbled output).
+        torch.npu.current_stream().synchronize()
         return deferred
 
     @contextmanager
@@ -459,6 +457,10 @@ class NPUModelRunner310(NPUModelRunner):
             self.gdn_query_start_loc.np[1 : num_reqs + 1] = cu_num_tokens
             self.gdn_query_start_loc.np[num_reqs + 1 :].fill(cu_num_tokens[-1])
             copy_snapshot_to_gpu(self.gdn_query_start_loc)
+            # Ensure gdn_query_start_loc H2D copy completes before graph replay.
+            # copy_snapshot_to_gpu uses non_blocking=True; without this barrier
+            # the replay may read warmup dummy values and produce garbled tokens.
+            torch.npu.current_stream().synchronize()
 
         torch.add(
             self.input_batch.num_computed_tokens_cpu_tensor[:num_reqs],
