@@ -228,6 +228,10 @@ csrc/third_party/
 
 .codegraph/
 
+# Local agent workspaces and generated task artifacts.
+.agent/
+agentic/
+
 .vllm_ascend/
 _archived/
 # causal_fa_310p prebuilt binaries (not tracked, copy before build)
