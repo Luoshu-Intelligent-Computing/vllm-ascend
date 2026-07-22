@@ -232,6 +232,14 @@ csrc/third_party/
 .agent/
 agentic/
 
+# Workspace-local tools, upstream checkout, and generated probe parameters.
+/.agents/plugins/
+/.cannbot-codex/
+/plugins/cannbot-codex
+/vllm_core/
+/tmp/*_params.py
+/deploy/scripts/*.backup_*
+
 .vllm_ascend/
 _archived/
 # causal_fa_310p prebuilt binaries (not tracked, copy before build)
